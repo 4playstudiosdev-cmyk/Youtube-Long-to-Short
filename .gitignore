@@ -1,0 +1,35 @@
+Python cache
+
+pycache/
+*.py[cod]
+
+Virtual Environment
+
+venv/
+env/
+
+IDE settings
+
+.vscode/
+.idea/
+
+Large Media Files (Don't upload these to GitHub)
+
+*.mp4
+*.avi
+*.mov
+*.mp3
+*.wav
+
+AI Models (Too big for GitHub)
+
+models/
+
+Generated content
+
+backend/static/clips/*
+produced_clips/
+
+Sensitive Credentials (CRITICAL: Do not upload these!)
+
+client_secrets.json
