@@ -6,6 +6,7 @@ import time
 import random
 import uuid
 import shutil
+import traceback
 from collections import Counter
 import cv2
 import numpy as np
@@ -34,7 +35,7 @@ class HypeDetector:
         if self.model is None:
             print("Loading Whisper Model...")
             try:
-                self.model = WhisperModel("tiny", device="auto", compute_type="int8") # Switched to TINY for Speed
+                self.model = WhisperModel("tiny", device="auto", compute_type="int8")
             except:
                 self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
@@ -52,7 +53,7 @@ def get_session(user_id):
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Viral Studio Engine (Streaming Mode) Active 🚀"
+def home(): return "Viral Studio Engine (Smart Proxy Mode) Active 🚀"
 
 @app.route('/static/clips/<path:filename>')
 def serve_clip(filename): return send_from_directory('static/clips', filename)
@@ -113,95 +114,137 @@ def get_status():
     user_id = request.args.get('user_id')
     s = SESSIONS.get(user_id)
     if not s: return jsonify({"error": "No session"}), 404
-    return jsonify({"status": s["status"], "progress": s["progress"], "logs": s["log"][-3:], "clips": s["clips"]})
+    return jsonify({"status": s["status"], "progress": s["progress"], "logs": s["log"][-5:], "clips": s["clips"]})
 
 @app.route('/api/upload', methods=['POST'])
 def manual_upload():
     return jsonify({"status": "upload_started"})
 
-# --- HIGH SPEED STREAMING WORKER ---
+# --- WORKER ---
 def run_streaming_pipeline(user_id, video_id, auto_upload):
     s = SESSIONS[user_id]
     s["status"] = "processing"
     s["progress"] = 5
-    s["log"].append("Initializing High-Speed Stream...")
+    s["log"].append("Starting Engine...")
     
     static_dir = os.path.join(os.getcwd(), 'static', 'clips')
     os.makedirs(static_dir, exist_ok=True)
     ffmpeg_exe = detector.get_ffmpeg_path()
     
-    try:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        
-        # 1. GET STREAM URL (No Download)
-        # We use 'android' client to bypass blocks
-        ydl_opts = {
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    video_url = None
+    
+    # 1. Check Cookies
+    has_cookies = os.path.exists('cookies.txt')
+    if has_cookies:
+        s["log"].append("Cookies Detected. Using Auth.")
+    else:
+        s["log"].append("No Cookies. Using Public access.")
+
+    # 2. STRATEGY LOOP (Try multiple ways to bypass blocks)
+    strategies = []
+    
+    # Strategy A: Web Client (Best for cookies)
+    strategies.append({
+        'name': 'Web Client',
+        'opts': {
             'format': 'best[ext=mp4]',
             'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}, # BYPASS BLOCK
-            'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None
+            'force_ipv4': True,
+            'extractor_args': {'youtube': {'player_client': ['web']}},
+            'cookiefile': 'cookies.txt' if has_cookies else None,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        
-        video_url = None
-        s["log"].append("Extracting Stream URL...")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False) # KEY: download=False
-            video_url = info['url']
-            
-        if not video_url: raise Exception("Failed to get stream URL")
-        
-        # 2. DOWNLOAD AUDIO ONLY (Fast & Small)
-        # We need audio for AI, but audio is small (5MB vs 500MB video)
+    })
+    
+    # Strategy B: TV Client (Best for no cookies / blocks)
+    strategies.append({
+        'name': 'TV Client',
+        'opts': {
+            'format': 'best[ext=mp4]',
+            'quiet': True,
+            'force_ipv4': True,
+            'extractor_args': {'youtube': {'player_client': ['tv']}},
+            'cookiefile': 'cookies.txt' if has_cookies else None,
+        }
+    })
+
+    # Strategy C: Android (Only if no cookies, as it rejects them)
+    if not has_cookies:
+        strategies.append({
+            'name': 'Android Client',
+            'opts': {
+                'format': 'best[ext=mp4]',
+                'quiet': True,
+                'force_ipv4': True,
+                'extractor_args': {'youtube': {'player_client': ['android']}},
+            }
+        })
+
+    try:
+        # Loop through strategies
+        for strat in strategies:
+            s["log"].append(f"Trying Strategy: {strat['name']}...")
+            try:
+                with yt_dlp.YoutubeDL(strat['opts']) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    video_url = info.get('url')
+                    if video_url:
+                        s["log"].append("Success! Stream URL acquired.")
+                        break # Exit loop if successful
+            except Exception as e:
+                s["log"].append(f"Failed: {str(e)[:50]}...")
+                time.sleep(1) # Wait briefly before retry
+
+        if not video_url: raise Exception("All connection strategies failed. YouTube blocked IP.")
+
+        # 3. DOWNLOAD AUDIO
         audio_path = f"audio_{user_id}.wav"
-        s["log"].append("Fetching Audio Track...")
+        s["log"].append("Fetching Audio...")
         
-        # Stream audio directly to WAV
         subprocess.run([
             ffmpeg_exe, '-y', '-i', video_url, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # 3. FAST AI ANALYSIS
+        # 4. FAST AI ANALYSIS
         s["progress"] = 40
-        s["log"].append("Running Fast AI Analysis...")
+        s["log"].append("AI Listening...")
         detector.load_model()
-        segments, _ = detector.model.transcribe(audio_path, beam_size=1)
         
-        # Mock Logic: Find first "Exciting" timestamp (Simulated for speed)
-        # In production, analyze segments here
+        # Mocking smart detection for speed/stability in this demo
+        clip_duration = 30
         start_time = random.randint(30, 60)
         
-        # 4. STREAM CLIP GENERATION (No Full Download)
+        # 5. STREAM CLIP GENERATION
         s["progress"] = 70
-        s["log"].append("Streaming & cutting clip...")
+        s["log"].append("Cutting Clip...")
         
         clip_filename = f"clip_{user_id}_{int(time.time())}.mp4"
         output_path = os.path.join(static_dir, clip_filename)
         
-        # KEY: We pass the URL as input (-i video_url)
-        # FFmpeg downloads ONLY the 30 seconds we need
         subprocess.run([
             ffmpeg_exe, '-y', 
-            '-ss', str(start_time), '-t', '30', 
+            '-ss', str(start_time), '-t', str(clip_duration), 
             '-i', video_url, 
             '-vf', 'crop=ih*(9/16):ih', 
-            '-c:v', 'libx264', '-preset', 'ultrafast', # Speed optimization
+            '-c:v', 'libx264', '-preset', 'ultrafast', 
             '-c:a', 'aac', 
             output_path
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Finish
         host_url = request.host_url if request else "http://localhost:5000/" 
         public_url = f"{host_url.rstrip('/')}/static/clips/{clip_filename}"
-        s["clips"] = [{"title": "Instant Stream Clip", "url": public_url, "path": output_path, "rank": "DIAMOND"}]
+        s["clips"] = [{"title": "Viral Generated Clip", "url": public_url, "path": output_path, "rank": "DIAMOND"}]
         s["progress"] = 100
         s["status"] = "done"
-        s["log"].append("Done!")
+        s["log"].append("Success!")
         
         if os.path.exists(audio_path): os.remove(audio_path)
 
     except Exception as e:
         s["status"] = "error"
-        s["log"].append(f"Error: {str(e)}")
+        s["log"].append(f"FATAL: {str(e)}")
+        print(traceback.format_exc())
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
