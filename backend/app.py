@@ -7,12 +7,6 @@ import random
 import uuid
 import shutil
 import traceback
-from collections import Counter
-import cv2
-import numpy as np
-import librosa
-from faster_whisper import WhisperModel
-import imageio_ffmpeg
 import subprocess
 from flask import Flask, jsonify, request, redirect, session, send_from_directory, url_for
 from flask_cors import CORS
@@ -20,6 +14,9 @@ import yt_dlp
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from faster_whisper import WhisperModel
+import imageio_ffmpeg
+import numpy as np
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -44,6 +41,11 @@ class HypeDetector:
         if system_ffmpeg: return system_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
 
+    def transcribe(self, audio_path):
+        self.load_model()
+        segments, _ = self.model.transcribe(audio_path, beam_size=5)
+        return list(segments)
+
 detector = HypeDetector()
 
 def get_session(user_id):
@@ -53,7 +55,7 @@ def get_session(user_id):
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Viral Studio Engine (Smart Proxy Mode) Active 🚀"
+def home(): return "Viral Studio Engine (Robust Download Mode) Active 🚀"
 
 @app.route('/static/clips/<path:filename>')
 def serve_clip(filename): return send_from_directory('static/clips', filename)
@@ -105,7 +107,7 @@ def process_video():
     user_id = data.get('user_id')
     s = SESSIONS.get(user_id)
     if not s: return jsonify({"error": "Unauthorized"}), 401
-    thread = threading.Thread(target=run_streaming_pipeline, args=(user_id, data.get('video_id'), data.get('auto_upload')))
+    thread = threading.Thread(target=run_robust_pipeline, args=(user_id, data.get('video_id'), data.get('auto_upload')))
     thread.start()
     return jsonify({"status": "started"})
 
@@ -118,133 +120,148 @@ def get_status():
 
 @app.route('/api/upload', methods=['POST'])
 def manual_upload():
+    # Placeholder for manual trigger if needed, currently handled in pipeline
     return jsonify({"status": "upload_started"})
 
 # --- WORKER ---
-def run_streaming_pipeline(user_id, video_id, auto_upload):
+def run_robust_pipeline(user_id, video_id, auto_upload):
     s = SESSIONS[user_id]
     s["status"] = "processing"
     s["progress"] = 5
-    s["log"].append("Starting Engine...")
+    s["log"].append("Starting Robust Engine...")
     
     static_dir = os.path.join(os.getcwd(), 'static', 'clips')
     os.makedirs(static_dir, exist_ok=True)
     ffmpeg_exe = detector.get_ffmpeg_path()
     
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    video_url = None
+    temp_name = f"temp_{user_id}.mp4"
+    audio_name = f"audio_{user_id}.wav"
     
-    # 1. Check Cookies
-    has_cookies = os.path.exists('cookies.txt')
-    if has_cookies:
-        s["log"].append("Cookies Detected. Using Auth.")
-    else:
-        s["log"].append("No Cookies. Using Public access.")
-
-    # 2. STRATEGY LOOP (Try multiple ways to bypass blocks)
-    strategies = []
-    
-    # Strategy A: Web Client (Best for cookies)
-    strategies.append({
-        'name': 'Web Client',
-        'opts': {
-            'format': 'best[ext=mp4]',
-            'quiet': True,
-            'force_ipv4': True,
-            'extractor_args': {'youtube': {'player_client': ['web']}},
-            'cookiefile': 'cookies.txt' if has_cookies else None,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-    })
-    
-    # Strategy B: TV Client (Best for no cookies / blocks)
-    strategies.append({
-        'name': 'TV Client',
-        'opts': {
-            'format': 'best[ext=mp4]',
-            'quiet': True,
-            'force_ipv4': True,
-            'extractor_args': {'youtube': {'player_client': ['tv']}},
-            'cookiefile': 'cookies.txt' if has_cookies else None,
-        }
-    })
-
-    # Strategy C: Android (Only if no cookies, as it rejects them)
-    if not has_cookies:
-        strategies.append({
-            'name': 'Android Client',
-            'opts': {
-                'format': 'best[ext=mp4]',
-                'quiet': True,
-                'force_ipv4': True,
-                'extractor_args': {'youtube': {'player_client': ['android']}},
-            }
-        })
-
     try:
-        # Loop through strategies
-        for strat in strategies:
-            s["log"].append(f"Trying Strategy: {strat['name']}...")
-            try:
-                with yt_dlp.YoutubeDL(strat['opts']) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    video_url = info.get('url')
-                    if video_url:
-                        s["log"].append("Success! Stream URL acquired.")
-                        break # Exit loop if successful
-            except Exception as e:
-                s["log"].append(f"Failed: {str(e)[:50]}...")
-                time.sleep(1) # Wait briefly before retry
-
-        if not video_url: raise Exception("All connection strategies failed. YouTube blocked IP.")
-
-        # 3. DOWNLOAD AUDIO
-        audio_path = f"audio_{user_id}.wav"
-        s["log"].append("Fetching Audio...")
+        url = f"https://www.youtube.com/watch?v={video_id}"
         
-        subprocess.run([
-            ffmpeg_exe, '-y', '-i', video_url, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 1. ROBUST DOWNLOAD (Using TV Client + Cookies)
+        s["log"].append("Downloading Source (TV Client)...")
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best', # Get best single file format
+            'outtmpl': temp_name,
+            'ffmpeg_location': ffmpeg_exe,
+            'force_ipv4': True,
+            'quiet': True,
+            'extractor_args': {'youtube': {'player_client': ['tv']}}, # Force TV Client
+            'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+            'socket_timeout': 60,
+            'retries': 10
+        }
         
-        # 4. FAST AI ANALYSIS
+        if os.path.exists(temp_name): os.remove(temp_name)
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            s["log"].append("TV Client Failed. Trying Web Client...")
+            # Fallback to Web
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+        if not os.path.exists(temp_name):
+            raise Exception("Download failed. YouTube blocked IP or cookies invalid.")
+        
+        # 2. EXTRACT AUDIO FOR AI
         s["progress"] = 40
-        s["log"].append("AI Listening...")
-        detector.load_model()
+        s["log"].append("Extracting Audio...")
+        subprocess.run([ffmpeg_exe, '-y', '-i', temp_name, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Mocking smart detection for speed/stability in this demo
-        clip_duration = 30
-        start_time = random.randint(30, 60)
+        # 3. REAL AI ANALYSIS
+        s["log"].append("AI Analyzing Content...")
+        segments = detector.transcribe(audio_name)
         
-        # 5. STREAM CLIP GENERATION
+        # Simple Viral Detector: Look for high-energy keywords
+        hype_keywords = ["omg", "wow", "insane", "what", "crazy", "lol", "god", "stop", "win", "fail"]
+        best_segment = None
+        
+        # Scan for keywords
+        for seg in segments:
+            text = seg.text.lower()
+            if any(k in text for k in hype_keywords):
+                best_segment = seg
+                break
+        
+        # Fallback: Just take a segment from the middle if no keywords found
+        if not best_segment:
+            start_time = 60 if len(segments) > 0 else 0
+        else:
+            start_time = best_segment.start
+
+        # 4. CUT CLIP
         s["progress"] = 70
-        s["log"].append("Cutting Clip...")
+        s["log"].append(f"Cutting Clip at {int(start_time)}s...")
         
         clip_filename = f"clip_{user_id}_{int(time.time())}.mp4"
         output_path = os.path.join(static_dir, clip_filename)
         
+        # Robust Crop
         subprocess.run([
             ffmpeg_exe, '-y', 
-            '-ss', str(start_time), '-t', str(clip_duration), 
-            '-i', video_url, 
-            '-vf', 'crop=ih*(9/16):ih', 
-            '-c:v', 'libx264', '-preset', 'ultrafast', 
-            '-c:a', 'aac', 
+            '-ss', str(start_time), '-t', '60', # 60s Clip
+            '-i', temp_name, 
+            '-vf', 'crop=ih*(9/16):ih', # Vertical Crop
+            '-c:v', 'libx264', '-c:a', 'aac', 
             output_path
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        host_url = request.host_url if request else "http://localhost:5000/" 
-        public_url = f"{host_url.rstrip('/')}/static/clips/{clip_filename}"
-        s["clips"] = [{"title": "Viral Generated Clip", "url": public_url, "path": output_path, "rank": "DIAMOND"}]
+        # 5. AUTO UPLOAD
+        public_url = f"{request.host_url.rstrip('/')}/static/clips/{clip_filename}"
+        clip_data = {"title": "Viral Clip AI", "url": public_url, "path": output_path, "rank": "DIAMOND"}
+        
+        if auto_upload:
+            s["log"].append("Auto-Uploading to YouTube...")
+            try:
+                upload_to_youtube(user_id, output_path, "Viral Clip #shorts", "Generated by ViralStudio #shorts")
+                s["log"].append("Upload Successful!")
+            except Exception as ue:
+                s["log"].append(f"Upload Failed: {str(ue)}")
+
+        s["clips"] = [clip_data]
         s["progress"] = 100
         s["status"] = "done"
         s["log"].append("Success!")
         
-        if os.path.exists(audio_path): os.remove(audio_path)
+        # Cleanup
+        if os.path.exists(temp_name): os.remove(temp_name)
+        if os.path.exists(audio_name): os.remove(audio_name)
 
     except Exception as e:
         s["status"] = "error"
         s["log"].append(f"FATAL: {str(e)}")
         print(traceback.format_exc())
+
+def upload_to_youtube(user_id, path, title, desc):
+    s = SESSIONS[user_id]
+    from google.oauth2.credentials import Credentials
+    creds = Credentials(**s['credentials'])
+    service = build('youtube', 'v3', credentials=creds)
+    
+    body = {
+        'snippet': {
+            'title': title,
+            'description': desc,
+            'tags': ['shorts', 'viral'],
+            'categoryId': '22'
+        },
+        'status': {
+            'privacyStatus': 'public', # Change to 'private' for testing
+            'selfDeclaredMadeForKids': False
+        }
+    }
+    media = MediaFileUpload(path, chunksize=-1, resumable=True)
+    request = service.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
+    
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
