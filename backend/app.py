@@ -55,7 +55,7 @@ def get_session(user_id):
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Viral Studio Engine (iOS Strategy) Active 🚀"
+def home(): return "Viral Studio Engine (Mobile Web Strategy) Active 🚀"
 
 @app.route('/static/clips/<path:filename>')
 def serve_clip(filename): return send_from_directory('static/clips', filename)
@@ -138,38 +138,74 @@ def run_pipeline(user_id, video_id, auto_upload):
     
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
+        has_cookies = os.path.exists('cookies.txt')
         
-        # --- THE FIX: USE iOS CLIENT & DISABLE COOKIES ---
-        # Cookies are causing the 429 block because of IP mismatch.
-        # iOS client is currently the most robust for server-side downloading.
+        # --- STRATEGY: MOBILE WEB (mweb) ---
+        # mweb supports cookies (bypassing the "Sign in" error) 
+        # but is less strict than Desktop Web (bypassing 429 error)
         
-        s["log"].append("Downloading (iOS Mode)...")
+        strategies = []
         
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best', 
-            'outtmpl': temp_name,
-            'ffmpeg_location': ffmpeg_exe,
-            'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['ios']}}, # Force iOS
-            'cookiefile': None, # EXPLICITLY DISABLE COOKIES
-            'socket_timeout': 60,
-            'retries': 10
-        }
+        # 1. Mobile Web + Cookies (The Sweet Spot)
+        strategies.append({
+            'name': 'Mobile Web',
+            'opts': {
+                'format': 'best[ext=mp4]/best', 
+                'outtmpl': temp_name,
+                'ffmpeg_location': ffmpeg_exe,
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['mweb']}}, # MOBILE WEB
+                'cookiefile': 'cookies.txt' if has_cookies else None, 
+                'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36', # Android User Agent
+                'socket_timeout': 60,
+                'retries': 10
+            }
+        })
+
+        # 2. TV Client + Cookies (Backup)
+        strategies.append({
+            'name': 'TV Client',
+            'opts': {
+                'format': 'best[ext=mp4]/best', 
+                'outtmpl': temp_name,
+                'ffmpeg_location': ffmpeg_exe,
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['tv']}}, 
+                'cookiefile': 'cookies.txt' if has_cookies else None,
+            }
+        })
+        
+        # 3. Android - NO COOKIES (Hail Mary)
+        strategies.append({
+            'name': 'Android (No Cookies)',
+            'opts': {
+                'format': 'best[ext=mp4]/best', 
+                'outtmpl': temp_name,
+                'ffmpeg_location': ffmpeg_exe,
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['android']}}, 
+                'cookiefile': None, # Force Disable Cookies
+            }
+        })
         
         if os.path.exists(temp_name): os.remove(temp_name)
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-        except Exception as e:
-            s["log"].append("iOS Failed. Trying Android...")
-            # Fallback: Android without cookies
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android']}}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+        success = False
+        for strat in strategies:
+            if success: break
+            s["log"].append(f"Attempting: {strat['name']}...")
+            try:
+                with yt_dlp.YoutubeDL(strat['opts']) as ydl:
+                    ydl.download([url])
+                if os.path.exists(temp_name):
+                    success = True
+                    s["log"].append("Download Success!")
+            except Exception as e:
+                s["log"].append(f"Failed: {str(e)[:40]}")
+                time.sleep(1)
 
-        if not os.path.exists(temp_name):
-            raise Exception("Download failed. YouTube blocked Render IP.")
+        if not success:
+            raise Exception("All download strategies failed. YouTube blocked IP.")
         
         # 2. EXTRACT AUDIO FOR AI
         s["progress"] = 40
