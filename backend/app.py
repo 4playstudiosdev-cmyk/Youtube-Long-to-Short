@@ -13,7 +13,8 @@ import librosa
 from faster_whisper import WhisperModel
 import imageio_ffmpeg
 import subprocess
-from flask import Flask, jsonify, request, redirect, session, send_from_directory
+# FIXED: Added url_for to imports
+from flask import Flask, jsonify, request, redirect, session, send_from_directory, url_for
 from flask_cors import CORS
 import yt_dlp
 from google_auth_oauthlib.flow import Flow
@@ -85,7 +86,6 @@ def serve_clip(filename):
 @app.route('/auth/login', methods=['GET'])
 def login():
     # 1. Create a Flow instance to manage the OAuth 2.0 Authorization Grant Flow steps.
-    # NOTE: You must download "Web application" credentials from Google Cloud, not Desktop.
     if not os.path.exists("client_secrets.json"):
         return jsonify({"error": "client_secrets.json missing on server"}), 500
 
