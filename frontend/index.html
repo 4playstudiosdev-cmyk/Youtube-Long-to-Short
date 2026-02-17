@@ -127,8 +127,8 @@
 
     <script>
         // ==========================================
-        // ⚠️ YOUR RENDER URL
-        const BACKEND_URL = "https://youtube-long-to-short.onrender.com"; 
+        // ⚠️ YOUR NGROK URL IS HERE:
+        const BACKEND_URL = "https://unboding-preradio-na.ngrok-free.dev"; 
         // ==========================================
 
         let userId = localStorage.getItem('viral_user_id');
@@ -165,7 +165,7 @@
                 // Redirect user to Google
                 window.location.href = data.auth_url; 
             } catch (e) {
-                alert(`Error connecting to server: ${e.message}. Is your Render app running?`);
+                alert(`Error connecting to server: ${e.message}. Is Python running on your PC?`);
                 document.getElementById('btn-connect').innerHTML = '<i class="fa-brands fa-google"></i> SIGN IN WITH GOOGLE';
             }
         }
@@ -261,7 +261,7 @@
                     loadResults(data.clips);
                 } else if (data.status === 'error') {
                     clearInterval(interval);
-                    alert('Processing Failed');
+                    alert('Processing Failed. Check PC Terminal for details.');
                     goBack();
                 }
             }, 2000);
@@ -275,12 +275,12 @@
                 div.className = 'bg-[#1a1a1a] p-4 rounded-lg flex items-center justify-between border border-gray-800';
                 div.innerHTML = `
                     <div class="flex items-center gap-4">
-                        <div class="w-16 h-24 bg-black rounded overflow-hidden">
-                            <video src="${clip.url}" class="w-full h-full object-cover"></video>
+                        <div class="w-24 h-40 bg-black rounded overflow-hidden">
+                            <video src="${clip.url}" class="w-full h-full object-cover" controls></video>
                         </div>
                         <div>
-                            <h4 class="font-bold text-sm text-white">${clip.title}</h4>
-                            <a href="${clip.url}" target="_blank" class="text-cyan-400 text-xs hover:underline">Download / View</a>
+                            <h4 class="font-bold text-sm text-white mb-2">${clip.title}</h4>
+                            <span class="bg-cyan-900 text-cyan-400 text-xs px-2 py-1 rounded">DIAMOND TIER</span>
                         </div>
                     </div>
                 `;

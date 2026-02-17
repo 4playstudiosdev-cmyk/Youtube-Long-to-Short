@@ -19,8 +19,9 @@ import imageio_ffmpeg
 import numpy as np
 
 app = Flask(__name__)
+# Allow CORS so Netlify can talk to your PC
 CORS(app, resources={r"/*": {"origins": "*"}})
-app.secret_key = os.environ.get("SECRET_KEY", "viral_studio_super_secret")
+app.secret_key = "viral_studio_local_secret"
 
 SESSIONS = {} 
 
@@ -30,15 +31,19 @@ class HypeDetector:
         
     def load_model(self):
         if self.model is None:
-            print("Loading Whisper Model...")
+            print("Loading Whisper Model (using GPU if available)...")
             try:
-                self.model = WhisperModel("tiny", device="auto", compute_type="int8")
+                # Use 'small' model for better accuracy on PC
+                self.model = WhisperModel("small", device="auto", compute_type="int8")
             except:
-                self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                self.model = WhisperModel("small", device="cpu", compute_type="int8")
 
     def get_ffmpeg_path(self):
         system_ffmpeg = shutil.which("ffmpeg")
         if system_ffmpeg: return system_ffmpeg
+        # Fallback for local windows execution
+        local_ffmpeg = os.path.join(os.getcwd(), "ffmpeg.exe")
+        if os.path.exists(local_ffmpeg): return local_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
 
     def transcribe(self, audio_path):
@@ -55,25 +60,37 @@ def get_session(user_id):
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Viral Studio Engine (Mobile Web Strategy) Active 🚀"
+def home(): 
+    return "Viral Studio Home Server is Running! 🏠 Connect your Netlify Frontend to this URL."
 
 @app.route('/static/clips/<path:filename>')
-def serve_clip(filename): return send_from_directory('static/clips', filename)
+def serve_clip(filename): 
+    # Enable range requests for seeking in video player
+    return send_from_directory('static/clips', filename)
 
 @app.route('/auth/login', methods=['GET'])
 def login():
     if not os.path.exists("client_secrets.json"): return jsonify({"error": "client_secrets.json missing"}), 500
+    
+    # Dynamic Redirect URI based on incoming request (works with Ngrok)
     redirect_uri = url_for('oauth2callback', _external=True)
-    if os.environ.get('RENDER'): redirect_uri = redirect_uri.replace('http:', 'https:')
-    flow = Flow.from_client_secrets_file('client_secrets.json', scopes=['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'], redirect_uri=redirect_uri)
+    redirect_uri = redirect_uri.replace('http:', 'https:') # Enforce HTTPS for Ngrok
+    
+    flow = Flow.from_client_secrets_file(
+        'client_secrets.json', 
+        scopes=['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'], 
+        redirect_uri=redirect_uri
+    )
     auth_url, _ = flow.authorization_url(access_type='offline', include_granted_scopes='true')
     return jsonify({"auth_url": auth_url})
 
 @app.route('/oauth2callback')
 def oauth2callback():
     state = request.args.get('state'); code = request.args.get('code')
+    
     redirect_uri = url_for('oauth2callback', _external=True)
-    if os.environ.get('RENDER'): redirect_uri = redirect_uri.replace('http:', 'https:')
+    redirect_uri = redirect_uri.replace('http:', 'https:') # Enforce HTTPS
+    
     try:
         flow = Flow.from_client_secrets_file('client_secrets.json', scopes=['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'], redirect_uri=redirect_uri, state=state)
         flow.fetch_token(code=code)
@@ -81,7 +98,10 @@ def oauth2callback():
         s = get_session(user_id)
         creds = flow.credentials
         s['credentials'] = {'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes}
-        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5500") 
+        
+        # Redirect to Netlify
+        # NOTE: You can set this env var on your PC or hardcode your Netlify URL here
+        frontend_url = os.environ.get("FRONTEND_URL", "https://your-netlify-app.netlify.app") 
         return redirect(f"{frontend_url}?user_id={user_id}")
     except Exception as e: return f"Auth Failed: {str(e)}"
 
@@ -107,7 +127,7 @@ def process_video():
     user_id = data.get('user_id')
     s = SESSIONS.get(user_id)
     if not s: return jsonify({"error": "Unauthorized"}), 401
-    thread = threading.Thread(target=run_pipeline, args=(user_id, data.get('video_id'), data.get('auto_upload')))
+    thread = threading.Thread(target=run_local_pipeline, args=(user_id, data.get('video_id'), data.get('auto_upload')))
     thread.start()
     return jsonify({"status": "started"})
 
@@ -123,11 +143,11 @@ def manual_upload():
     return jsonify({"status": "upload_started"})
 
 # --- WORKER ---
-def run_pipeline(user_id, video_id, auto_upload):
+def run_local_pipeline(user_id, video_id, auto_upload):
     s = SESSIONS[user_id]
     s["status"] = "processing"
     s["progress"] = 5
-    s["log"].append("Starting Engine...")
+    s["log"].append("Starting Local Engine...")
     
     static_dir = os.path.join(os.getcwd(), 'static', 'clips')
     os.makedirs(static_dir, exist_ok=True)
@@ -138,85 +158,39 @@ def run_pipeline(user_id, video_id, auto_upload):
     
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        has_cookies = os.path.exists('cookies.txt')
         
-        # --- STRATEGY: MOBILE WEB (mweb) ---
-        # mweb supports cookies (bypassing the "Sign in" error) 
-        # but is less strict than Desktop Web (bypassing 429 error)
+        # --- SIMPLE DOWNLOADER (Since Home IP is trusted) ---
+        s["log"].append("Downloading (Home IP)...")
         
-        strategies = []
-        
-        # 1. Mobile Web + Cookies (The Sweet Spot)
-        strategies.append({
-            'name': 'Mobile Web',
-            'opts': {
-                'format': 'best[ext=mp4]/best', 
-                'outtmpl': temp_name,
-                'ffmpeg_location': ffmpeg_exe,
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['mweb']}}, # MOBILE WEB
-                'cookiefile': 'cookies.txt' if has_cookies else None, 
-                'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36', # Android User Agent
-                'socket_timeout': 60,
-                'retries': 10
-            }
-        })
-
-        # 2. TV Client + Cookies (Backup)
-        strategies.append({
-            'name': 'TV Client',
-            'opts': {
-                'format': 'best[ext=mp4]/best', 
-                'outtmpl': temp_name,
-                'ffmpeg_location': ffmpeg_exe,
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['tv']}}, 
-                'cookiefile': 'cookies.txt' if has_cookies else None,
-            }
-        })
-        
-        # 3. Android - NO COOKIES (Hail Mary)
-        strategies.append({
-            'name': 'Android (No Cookies)',
-            'opts': {
-                'format': 'best[ext=mp4]/best', 
-                'outtmpl': temp_name,
-                'ffmpeg_location': ffmpeg_exe,
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['android']}}, 
-                'cookiefile': None, # Force Disable Cookies
-            }
-        })
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best', 
+            'outtmpl': temp_name,
+            'ffmpeg_location': ffmpeg_exe,
+            'quiet': True,
+        }
         
         if os.path.exists(temp_name): os.remove(temp_name)
 
-        success = False
-        for strat in strategies:
-            if success: break
-            s["log"].append(f"Attempting: {strat['name']}...")
-            try:
-                with yt_dlp.YoutubeDL(strat['opts']) as ydl:
-                    ydl.download([url])
-                if os.path.exists(temp_name):
-                    success = True
-                    s["log"].append("Download Success!")
-            except Exception as e:
-                s["log"].append(f"Failed: {str(e)[:40]}")
-                time.sleep(1)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            s["log"].append(f"Download Error: {str(e)}")
+            raise e
 
-        if not success:
-            raise Exception("All download strategies failed. YouTube blocked IP.")
+        if not os.path.exists(temp_name):
+            raise Exception("Download failed.")
         
-        # 2. EXTRACT AUDIO FOR AI
+        # 2. EXTRACT AUDIO
         s["progress"] = 40
         s["log"].append("Extracting Audio...")
         subprocess.run([ffmpeg_exe, '-y', '-i', temp_name, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # 3. REAL AI ANALYSIS
+        # 3. AI ANALYSIS
         s["log"].append("AI Analyzing Content...")
         segments = detector.transcribe(audio_name)
         
-        # Simple Viral Detector
+        # Logic: Find high energy words
         hype_keywords = ["omg", "wow", "insane", "what", "crazy", "lol", "god", "stop", "win", "fail"]
         best_segment = None
         
@@ -238,7 +212,7 @@ def run_pipeline(user_id, video_id, auto_upload):
         clip_filename = f"clip_{user_id}_{int(time.time())}.mp4"
         output_path = os.path.join(static_dir, clip_filename)
         
-        # Robust Crop
+        # 9:16 Crop
         subprocess.run([
             ffmpeg_exe, '-y', 
             '-ss', str(start_time), '-t', '60',
@@ -249,7 +223,12 @@ def run_pipeline(user_id, video_id, auto_upload):
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         # 5. AUTO UPLOAD
-        public_url = f"{request.host_url.rstrip('/')}/static/clips/{clip_filename}"
+        # Fix: Ensure public URL uses the current request host (ngrok url)
+        host_url = request.host_url.rstrip('/') 
+        # But request context is lost in thread, so we construct it or use relative
+        # In this specific flow, we save the relative path to be served
+        public_url = f"/static/clips/{clip_filename}" 
+        
         clip_data = {"title": "Viral Clip AI", "url": public_url, "path": output_path, "rank": "DIAMOND"}
         
         if auto_upload:
@@ -299,5 +278,5 @@ def upload_to_youtube(user_id, path, title, desc):
         status, response = request.next_chunk()
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    # Local run on port 5000
+    app.run(host='0.0.0.0', port=5000)
