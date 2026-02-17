@@ -55,7 +55,7 @@ def get_session(user_id):
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Viral Studio Engine (Multi-Strategy Mode) Active 🚀"
+def home(): return "Viral Studio Engine (iOS Strategy) Active 🚀"
 
 @app.route('/static/clips/<path:filename>')
 def serve_clip(filename): return send_from_directory('static/clips', filename)
@@ -107,7 +107,7 @@ def process_video():
     user_id = data.get('user_id')
     s = SESSIONS.get(user_id)
     if not s: return jsonify({"error": "Unauthorized"}), 401
-    thread = threading.Thread(target=run_robust_pipeline, args=(user_id, data.get('video_id'), data.get('auto_upload')))
+    thread = threading.Thread(target=run_pipeline, args=(user_id, data.get('video_id'), data.get('auto_upload')))
     thread.start()
     return jsonify({"status": "started"})
 
@@ -123,7 +123,7 @@ def manual_upload():
     return jsonify({"status": "upload_started"})
 
 # --- WORKER ---
-def run_robust_pipeline(user_id, video_id, auto_upload):
+def run_pipeline(user_id, video_id, auto_upload):
     s = SESSIONS[user_id]
     s["status"] = "processing"
     s["progress"] = 5
@@ -138,74 +138,38 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
     
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        has_cookies = os.path.exists('cookies.txt')
         
-        # --- MULTI-STRATEGY DOWNLOADER ---
-        strategies = []
+        # --- THE FIX: USE iOS CLIENT & DISABLE COOKIES ---
+        # Cookies are causing the 429 block because of IP mismatch.
+        # iOS client is currently the most robust for server-side downloading.
         
-        # 1. TV Embedded (Usually robust, uses cookies if avail)
-        strategies.append({
-            'name': 'TV Embedded',
-            'opts': {
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': temp_name,
-                'ffmpeg_location': ffmpeg_exe,
-                'force_ipv4': True,
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['tv_embedded']}},
-                'cookiefile': 'cookies.txt' if has_cookies else None,
-            }
-        })
+        s["log"].append("Downloading (iOS Mode)...")
         
-        # 2. Android (Explicitly NO COOKIES to avoid the error)
-        strategies.append({
-            'name': 'Android (No Cookies)',
-            'opts': {
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': temp_name,
-                'ffmpeg_location': ffmpeg_exe,
-                'force_ipv4': True,
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['android']}},
-                'cookiefile': None, # Critical: Android client breaks with cookies
-            }
-        })
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best', 
+            'outtmpl': temp_name,
+            'ffmpeg_location': ffmpeg_exe,
+            'quiet': True,
+            'extractor_args': {'youtube': {'player_client': ['ios']}}, # Force iOS
+            'cookiefile': None, # EXPLICITLY DISABLE COOKIES
+            'socket_timeout': 60,
+            'retries': 10
+        }
+        
+        if os.path.exists(temp_name): os.remove(temp_name)
 
-        # 3. Web Client (Standard fallback)
-        strategies.append({
-            'name': 'Web Client',
-            'opts': {
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': temp_name,
-                'ffmpeg_location': ffmpeg_exe,
-                'force_ipv4': True,
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['web']}},
-                'cookiefile': 'cookies.txt' if has_cookies else None,
-            }
-        })
-        
-        download_success = False
-        
-        for strat in strategies:
-            if download_success: break
-            s["log"].append(f"Attempting: {strat['name']}...")
-            
-            if os.path.exists(temp_name): os.remove(temp_name)
-            
-            try:
-                with yt_dlp.YoutubeDL(strat['opts']) as ydl:
-                    ydl.download([url])
-                
-                if os.path.exists(temp_name):
-                    download_success = True
-                    s["log"].append("Download Success!")
-            except Exception as e:
-                s["log"].append(f"Strategy Failed: {str(e)[:40]}...")
-                time.sleep(2)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            s["log"].append("iOS Failed. Trying Android...")
+            # Fallback: Android without cookies
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android']}}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
-        if not download_success:
-            raise Exception("All download strategies failed. YouTube Blocked IP.")
+        if not os.path.exists(temp_name):
+            raise Exception("Download failed. YouTube blocked Render IP.")
         
         # 2. EXTRACT AUDIO FOR AI
         s["progress"] = 40
@@ -238,6 +202,7 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
         clip_filename = f"clip_{user_id}_{int(time.time())}.mp4"
         output_path = os.path.join(static_dir, clip_filename)
         
+        # Robust Crop
         subprocess.run([
             ffmpeg_exe, '-y', 
             '-ss', str(start_time), '-t', '60',
