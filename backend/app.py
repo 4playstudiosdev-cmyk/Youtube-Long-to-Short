@@ -55,7 +55,7 @@ def get_session(user_id):
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Viral Studio Engine (Robust Download Mode) Active 🚀"
+def home(): return "Viral Studio Engine (Multi-Strategy Mode) Active 🚀"
 
 @app.route('/static/clips/<path:filename>')
 def serve_clip(filename): return send_from_directory('static/clips', filename)
@@ -120,7 +120,6 @@ def get_status():
 
 @app.route('/api/upload', methods=['POST'])
 def manual_upload():
-    # Placeholder for manual trigger if needed, currently handled in pipeline
     return jsonify({"status": "upload_started"})
 
 # --- WORKER ---
@@ -128,7 +127,7 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
     s = SESSIONS[user_id]
     s["status"] = "processing"
     s["progress"] = 5
-    s["log"].append("Starting Robust Engine...")
+    s["log"].append("Starting Engine...")
     
     static_dir = os.path.join(os.getcwd(), 'static', 'clips')
     os.makedirs(static_dir, exist_ok=True)
@@ -139,35 +138,74 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
     
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
+        has_cookies = os.path.exists('cookies.txt')
         
-        # 1. ROBUST DOWNLOAD (Using TV Client + Cookies)
-        s["log"].append("Downloading Source (TV Client)...")
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best', # Get best single file format
-            'outtmpl': temp_name,
-            'ffmpeg_location': ffmpeg_exe,
-            'force_ipv4': True,
-            'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['tv']}}, # Force TV Client
-            'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
-            'socket_timeout': 60,
-            'retries': 10
-        }
+        # --- MULTI-STRATEGY DOWNLOADER ---
+        strategies = []
         
-        if os.path.exists(temp_name): os.remove(temp_name)
+        # 1. TV Embedded (Usually robust, uses cookies if avail)
+        strategies.append({
+            'name': 'TV Embedded',
+            'opts': {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': temp_name,
+                'ffmpeg_location': ffmpeg_exe,
+                'force_ipv4': True,
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['tv_embedded']}},
+                'cookiefile': 'cookies.txt' if has_cookies else None,
+            }
+        })
+        
+        # 2. Android (Explicitly NO COOKIES to avoid the error)
+        strategies.append({
+            'name': 'Android (No Cookies)',
+            'opts': {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': temp_name,
+                'ffmpeg_location': ffmpeg_exe,
+                'force_ipv4': True,
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['android']}},
+                'cookiefile': None, # Critical: Android client breaks with cookies
+            }
+        })
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-        except Exception as e:
-            s["log"].append("TV Client Failed. Trying Web Client...")
-            # Fallback to Web
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+        # 3. Web Client (Standard fallback)
+        strategies.append({
+            'name': 'Web Client',
+            'opts': {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': temp_name,
+                'ffmpeg_location': ffmpeg_exe,
+                'force_ipv4': True,
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['web']}},
+                'cookiefile': 'cookies.txt' if has_cookies else None,
+            }
+        })
+        
+        download_success = False
+        
+        for strat in strategies:
+            if download_success: break
+            s["log"].append(f"Attempting: {strat['name']}...")
+            
+            if os.path.exists(temp_name): os.remove(temp_name)
+            
+            try:
+                with yt_dlp.YoutubeDL(strat['opts']) as ydl:
+                    ydl.download([url])
+                
+                if os.path.exists(temp_name):
+                    download_success = True
+                    s["log"].append("Download Success!")
+            except Exception as e:
+                s["log"].append(f"Strategy Failed: {str(e)[:40]}...")
+                time.sleep(2)
 
-        if not os.path.exists(temp_name):
-            raise Exception("Download failed. YouTube blocked IP or cookies invalid.")
+        if not download_success:
+            raise Exception("All download strategies failed. YouTube Blocked IP.")
         
         # 2. EXTRACT AUDIO FOR AI
         s["progress"] = 40
@@ -178,18 +216,16 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
         s["log"].append("AI Analyzing Content...")
         segments = detector.transcribe(audio_name)
         
-        # Simple Viral Detector: Look for high-energy keywords
+        # Simple Viral Detector
         hype_keywords = ["omg", "wow", "insane", "what", "crazy", "lol", "god", "stop", "win", "fail"]
         best_segment = None
         
-        # Scan for keywords
         for seg in segments:
             text = seg.text.lower()
             if any(k in text for k in hype_keywords):
                 best_segment = seg
                 break
         
-        # Fallback: Just take a segment from the middle if no keywords found
         if not best_segment:
             start_time = 60 if len(segments) > 0 else 0
         else:
@@ -202,12 +238,11 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
         clip_filename = f"clip_{user_id}_{int(time.time())}.mp4"
         output_path = os.path.join(static_dir, clip_filename)
         
-        # Robust Crop
         subprocess.run([
             ffmpeg_exe, '-y', 
-            '-ss', str(start_time), '-t', '60', # 60s Clip
+            '-ss', str(start_time), '-t', '60',
             '-i', temp_name, 
-            '-vf', 'crop=ih*(9/16):ih', # Vertical Crop
+            '-vf', 'crop=ih*(9/16):ih',
             '-c:v', 'libx264', '-c:a', 'aac', 
             output_path
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -229,7 +264,6 @@ def run_robust_pipeline(user_id, video_id, auto_upload):
         s["status"] = "done"
         s["log"].append("Success!")
         
-        # Cleanup
         if os.path.exists(temp_name): os.remove(temp_name)
         if os.path.exists(audio_name): os.remove(audio_name)
 
@@ -252,7 +286,7 @@ def upload_to_youtube(user_id, path, title, desc):
             'categoryId': '22'
         },
         'status': {
-            'privacyStatus': 'public', # Change to 'private' for testing
+            'privacyStatus': 'public',
             'selfDeclaredMadeForKids': False
         }
     }
